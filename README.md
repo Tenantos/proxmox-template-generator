@@ -26,7 +26,7 @@ Start with the interactive mode - it will generate a CLI command for automated b
 - **Ubuntu**: https://cloud-images.ubuntu.com/
 - **CentOS**: https://cloud.centos.org/centos/
 - **AlmaLinux**: https://repo.almalinux.org/almalinux/
-- **Rocky Linux**: https://download.rockylinux.org/pub/rocky/
+- **Rocky Linux**: https://rockylinux.org/download
 - **Fedora**: https://fedoraproject.org/cloud/download/
 
 ## Further Information
