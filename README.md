@@ -11,9 +11,9 @@ apt update && apt install libguestfs-tools
 ## Usage
 
 ```
-wget -O generator.sh https://raw.githubusercontent.com/Tenantos/proxmox-template-generator/refs/heads/main/generator.sh
-chmod +x generator.sh
-./generator.sh
+wget -O generate.sh https://raw.githubusercontent.com/Tenantos/proxmox-template-generator/refs/heads/main/generate.sh
+chmod +x generate.sh
+./generate.sh
 ```
 
 Run `./generate.sh --help` for all options.
