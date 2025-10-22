@@ -7,7 +7,7 @@
 
 set -euo pipefail
 
-readonly SCRIPT_VERSION="1.0.0"
+readonly SCRIPT_VERSION="1.0.1"
 readonly CACHE_DIR="/var/tmp/proxmox-templates"
 readonly COLOR_RESET="\033[0m"
 readonly COLOR_RED="\033[0;31m"
@@ -28,7 +28,7 @@ vgaDisplay="serial0"
 isRhelDerivative=false
 disableSelinux=false
 selinuxRelabel=false
-nisEnabled=false
+setQemuPermissive=false
 cleanupCache=false
 cloudImageUrl=""
 storageId=""
@@ -133,7 +133,7 @@ OPTIONS:
     --rhel-derivative              Mark as RHEL derivative (enables RHEL-specific fixes)
     --disable-selinux              Disable SELinux in the template
     --selinux-relabel              Run full SELinux relabel during build
-    --nis-enabled                  Enable SELinux nis_enabled boolean (allows confined processes network connections)
+    --qemu-permissive              Set qemu-guest-agent to SELinux permissive mode
     --update-packages              Update all packages during template build (recommended)
     --no-cache                     Force re-download of cloud image
     --cleanup                      Delete cached cloud image after template creation
@@ -259,7 +259,7 @@ customizeImage() {
 		"--run-command" "rm -f /etc/cloud/cloud-init.disabled"
 		"--run-command" "truncate -s 0 /etc/machine-id"
 		"--run-command" "rm -f /var/lib/dbus/machine-id"
-		"--run-command" "ln -s /etc/machine-id /var/lib/dbus/machine-id"
+		"--run-command" "ln -s /etc/machine-id /var/lib/dbus/machine-id || true"
 		"--no-logfile"
 	)
 
@@ -278,23 +278,26 @@ EOF
 		virtCustomizeArgs+=("--update")
 	fi
 
-	# RHEL cloud images have guest-exec commands disabled. Enable them, required for Tenantos script executions on installation
-	local rhelFix='if [ -f /etc/sysconfig/qemu-ga ]; then '
-	rhelFix+='sed -i "/^BLACKLIST_RPC=/s/\(^\|,\)guest-exec\(,\|$\)/\1/g; /^BLACKLIST_RPC=/s/,,/,/g; /^BLACKLIST_RPC=/s/^BLACKLIST_RPC=,/BLACKLIST_RPC=/; /^BLACKLIST_RPC=/s/,$//" /etc/sysconfig/qemu-ga; '
-	rhelFix+='if ! grep -q "guest-exec" /etc/sysconfig/qemu-ga; then '
-	rhelFix+='sed -i "s/\(--allow-rpcs=\)/\1guest-exec,/" /etc/sysconfig/qemu-ga; '
-	rhelFix+='fi; '
-	rhelFix+='command -v restorecon > /dev/null && restorecon /etc/sysconfig/qemu-ga || true; '
-	rhelFix+='fi'
-
 	if [[ "$isRhelDerivative" == true ]]; then
+		# RHEL cloud images have guest-exec commands disabled. Enable them, required for Tenantos script executions on installation
+		local rhelFix='if [ -f /etc/sysconfig/qemu-ga ]; then '
+		rhelFix+='sed -i "/^BLACKLIST_RPC=/s/\(^\|,\)guest-exec\(,\|$\)/\1/g; /^BLACKLIST_RPC=/s/,,/,/g; /^BLACKLIST_RPC=/s/^BLACKLIST_RPC=,/BLACKLIST_RPC=/; /^BLACKLIST_RPC=/s/,$//" /etc/sysconfig/qemu-ga; '
+		rhelFix+='if ! grep -v "^#" /etc/sysconfig/qemu-ga | grep -q "guest-exec"; then '
+		rhelFix+='sed -i "s/\(--allow-rpcs=\)/\1guest-exec,/" /etc/sysconfig/qemu-ga; '
+		rhelFix+='fi; '
+		rhelFix+='command -v restorecon > /dev/null && restorecon /etc/sysconfig/qemu-ga || true; '
+		rhelFix+='fi'
+
 		virtCustomizeArgs+=("--run-command" "$rhelFix")
 
-		if [[ "$nisEnabled" == true && "$disableSelinux" == false ]]; then
-			local nisFix='if [ -f /etc/selinux/config ] && grep -qE "^SELINUX=(enforcing|permissive)" /etc/selinux/config; then '
-			nisFix+='command -v setsebool > /dev/null && setsebool -P nis_enabled 1 || true; '
-			nisFix+='fi'
-			virtCustomizeArgs+=("--run-command" "$nisFix")
+		if [[ "$setQemuPermissive" == true && "$disableSelinux" == false ]]; then
+			local qemuPermissiveFix='if [ -f /etc/selinux/config ] && grep -qE "^SELINUX=(enforcing|permissive)" /etc/selinux/config; then '
+			qemuPermissiveFix+='dnf install -y policycoreutils-python-utils || yum install -y policycoreutils-python-utils || true; '
+			qemuPermissiveFix+='semanage permissive -a qemu_ga_t || true; '
+			qemuPermissiveFix+='semanage permissive -a virt_qemu_ga_t || true; '
+			qemuPermissiveFix+='fi'
+
+			virtCustomizeArgs+=("--run-command" "$qemuPermissiveFix")
 		fi
 	fi
 
@@ -739,18 +742,18 @@ interactiveMode() {
 			esac
 
 			echo
-			echo "Enable SELinux nis_enabled boolean? (Allows confined processes to make network connections, required for Tenantos installation callback via qemu-guest-agent)"
+			echo "Set qemu-guest-agent to SELinux permissive mode? (Recommended. Otherwise, you must handle SELinux-related issues yourself, which may affect Tenantos callbacks and first-boot scripts if SELinux is enforced.)"
 			echo "  1) Yes (recommended)"
 			echo "  2) No"
 			echo -n "Select [1-2]: "
-			read -r nisChoice
+			read -r qemuPermissiveChoice
 
-			case "$nisChoice" in
+			case "$qemuPermissiveChoice" in
 			1)
-				nisEnabled=true
+				setQemuPermissive=true
 				;;
 			2)
-				nisEnabled=false
+				setQemuPermissive=false
 				;;
 			*)
 				log "Invalid selection" "error"
@@ -809,7 +812,7 @@ interactiveMode() {
 		echo "  SELinux Disabled:  $([ "$disableSelinux" == true ] && echo "Yes" || echo "No")"
 		if [[ "$disableSelinux" == false ]]; then
 			echo "  SELinux Relabel:   $([ "$selinuxRelabel" == true ] && echo "Yes" || echo "No")"
-			echo "  NIS Enabled:       $([ "$nisEnabled" == true ] && echo "Yes" || echo "No")"
+			echo "  QEMU Permissive:   $([ "$setQemuPermissive" == true ] && echo "Yes" || echo "No")"
 		fi
 	fi
 
@@ -867,8 +870,8 @@ interactiveMode() {
 		cliCmd+=" --selinux-relabel"
 	fi
 
-	if [[ "$nisEnabled" == true ]]; then
-		cliCmd+=" --nis-enabled"
+	if [[ "$setQemuPermissive" == true ]]; then
+		cliCmd+=" --qemu-permissive"
 	fi
 
 	if [[ "$updatePackages" == true ]]; then
@@ -1015,8 +1018,8 @@ parseArguments() {
 			selinuxRelabel=true
 			shift
 			;;
-		--nis-enabled)
-			nisEnabled=true
+		--qemu-permissive)
+			setQemuPermissive=true
 			shift
 			;;
 		--update-packages)
